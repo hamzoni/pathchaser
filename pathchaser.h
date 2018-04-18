@@ -43,20 +43,26 @@ private:
     // frame segments
     int cpMaxlv; // number of segments total
     int cpLimlv; // number of segments to use
-    int cpSegmH; // segment height
+    double cpSegmH; // segment height
     int cpLimDt; // maximum of points to calculate min distance
     int cpMinDt; // minimum distance between point in a cluster
     int cpDviDt; // additional distance diviation
 
     // line segments
-    int cpLimFlH; // number of high segments bound line
-    int cpLimFlL; // number of low segments bound line
-    int cpFlmHB; // high bound segment height
-    int cpFlmLB; // low bound segment height
+    double cpLimFlH; // number of high segments bound line
+    double cpLimFlL; // number of low segments bound line
+    int cpFlmHB; // high bound segment height px
+    int cpFlmLB; // low bound segment height px
 
     // cluster params
     float clsAgliL;
     float clsAgliH;
+    Point2f pcp, plp, prp;
+
+    // path history
+
+    int mgAgl; // debug value for clsAglFm
+    float clsAglFm; // min acceptable angle
 
     // color
     Scalar clrred, clrgrn, clrblu, clrylw, clrwht;
@@ -110,17 +116,21 @@ public:
 
     // vector
     Point2f fvect(Point2f a, Point2f b); // find vector from two points
-    double lvect(Point2f v); // find length of two vectors
+    double lvect(Point2f v); // find length of a vectors
     double pvect(Point2f v1, Point2f v2); // find dot product of two vectors
     double avect(Point2f v1, Point2f v2); // find angle of two vectors
 
     // cluster point
+    vector<vector<Point2f>> gencluster(vector<Mat> parts);
     vector<vector<Point2f>> filterclusters(vector<vector<Point2f>> clusters, int minpoint);
     vector<vector<Point2f>> groupclusters(
         vector<vector<Point2f>> clusters,
         vector<vector<int>> couples,
         vector<double> vtangles,
         double minAngle);
+    double closerLeft(vector<Point2f> points, double x);
+    double closerRight(vector<Point2f> points, double x);
+    void findside(vector<Point2f> &left, vector<Point2f> &right, vector<Mat> frame);
 
     // draw
     Scalar randclr();
@@ -135,6 +145,7 @@ public:
     void drawcloudpoints(vector<vector<Point2f>> points, Mat frame);
     void drawclusters(vector<vector<Point2f>> clusters, Mat frame);
     void drawpoints(vector<Point2f> points, Mat frame, Scalar color);
+    void drawpoint(Point2f point, Mat frame, Scalar color);
     void drawline(Vec4f line, Mat frame, Scalar color);
     void drawfc(Mat frame); // draw frame counter
     Mat draw(Mat frame, Rect box, String label);
@@ -149,6 +160,8 @@ public:
     );
     bool intersectLine(Point2f o1, Point2f p1, Point2f o2, Point2f p2, Point2f &r);
     bool intersectLineSegment (vector<Point2f> p1, vector<Point2f> p2, Point2f &r);
+    Point2f leftmostPoint(vector<Point2f> points, double startX);
+    Point2f rightmostPoint(vector<Point2f> points, double endX);
 
     void getMeanDistance(vector<Point2f> points);
     double calcDistanceP(Point2f a, Point2f b);
@@ -159,9 +172,12 @@ public:
     vector<Point2f> converge(Mat frame);
     vector<Mat> segment(Mat frame, int n);
 
-    // raw process
+    // image preprocessing
     Mat bird(Mat source);
     Mat preprocess(Mat frame);
+
+    // image refining
+    void ctrclean(Mat frame);
     Mat noiseremove(Mat frame);
 
     // main

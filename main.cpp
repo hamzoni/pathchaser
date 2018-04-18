@@ -10,8 +10,11 @@ int main() {
     // p->frs = 362;
     // p->frs = 462;
     // p->frs = 614;
-    p->frs = 688;
-    p->video("/home/taquy/Desktop/vid/18.avi", 200);
+    // p->frs = 525; // nga 3
+    p->frs = 1; // nga 3 lan 1
+    // p->frs = 189; // nga 3 lan 2
+    // p->video("/home/taquy/Desktop/vid/18.avi", 400);
+    p->video("/home/taquy/Desktop/vid/19.avi", 400);
     
     return -1;
 }
