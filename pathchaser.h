@@ -10,8 +10,29 @@
 #include <stack>
 #include <fstream>
 #include <map>
+#include <ctime>
 using namespace std;
 using namespace cv;
+
+// #define debug_colorsearch
+// #define debug_rmnoise_mask
+// #define debug_chunk_trapazoid
+
+// #define debug_birdview
+#define debug_preprocess
+// #define debug_noiseremove
+
+/* graph 1: debug segmentation, clustering, fitline and fitline intersection */
+#define debug_graph1
+#define debug_segment
+#define debug_clustering
+#define debug_fitline
+#define debug_intersect
+
+/* graph 2: debug cluster grouping */
+// #define debug_graph2
+// #define debug_cluster_grouping
+// #define debug_threeway_detect
 
 class PathChaser
 {
@@ -22,10 +43,14 @@ private:
 
     // frame size
     Size fsize;
-
+    clock_t fps;
+    clock_t current_ticks, delta_ticks;
+    
     // lower color and upper color range
     int *min, *max;
     Scalar lower, upper;
+    int upr, upg, upb;
+
     
     // morpho close in refineMask()
     int mc;
@@ -49,17 +74,15 @@ private:
     int cpDviDt; // additional distance diviation
 
     // line segments
-    double cpLimFlH; // number of high segments bound line
-    double cpLimFlL; // number of low segments bound line
-    int cpFlmHB; // high bound segment height px
-    int cpFlmLB; // low bound segment height px
+    int cpLimFlH; // number of high segments bound line
+    int  cpLimFlL; // number of low segments bound line
+    double cpFlmHB; // high bound segment height px
+    double cpFlmLB; // low bound segment height px
 
     // cluster params
     float clsAgliL;
     float clsAgliH;
     Point2f pcp, plp, prp;
-
-    // path history
 
     int mgAgl; // debug value for clsAglFm
     float clsAglFm; // min acceptable angle
@@ -68,12 +91,30 @@ private:
     Scalar clrred, clrgrn, clrblu, clrylw, clrwht;
     RNG rng;
 
+    // color box trap params
+    int tbxLW, tbxHW, tbxH, tbxX, tbxY;
+
 public:
     // params container config file
     std::map<string, string> params;
 
-    // frame counter, frame seeder, frame start
-    int frc, fcp, frs;
+    // frame counter
+    int frc;
+
+    // frame start: start read video at a certain frame (debug feature)
+    int frs;
+    
+    // frame seeder: number of frame to get color range
+    int fcp;
+
+    // color search mask
+    string dbwn6;
+
+    // color search polygon mask
+    string dbwn8;
+
+    // remove noise mask
+    string dbwn7;
 
     // birdview params
     string dbwn;
@@ -113,6 +154,7 @@ public:
         vector<Point2f> its,
         vector<vector<int>> couples
     );
+    vector<Vec4i> findHoughLines(Mat mask, Mat &output);
 
     // vector
     Point2f fvect(Point2f a, Point2f b); // find vector from two points
@@ -149,6 +191,7 @@ public:
     void drawline(Vec4f line, Mat frame, Scalar color);
     void drawfc(Mat frame); // draw frame counter
     Mat draw(Mat frame, Rect box, String label);
+    Mat findCtrMask(Mat bin, vector<Rect> &roirects);
     
     // points
     vector<vector<Point2f>> dbscan(vector<Point2f> points, int epsilon);
@@ -175,10 +218,15 @@ public:
     // image preprocessing
     Mat bird(Mat source);
     Mat preprocess(Mat frame);
+    void laplacian(Mat src, Mat &sharp, Mat &lapla);
+    void thinningIteration(Mat& im, int iter);
+    void thinning(Mat& im);
+    Mat skeletonization(Mat inputImage);
 
     // image refining
     void ctrclean(Mat frame);
     Mat noiseremove(Mat frame);
+    Mat masknoisermv(Mat mask);
 
     // main
     Mat roadline(Mat frame);
@@ -192,16 +240,29 @@ public:
     // misc
     // void freevect(vector<x*> vect);
 
+    // shape anaylsis
+    Mat roadshape(Mat frame);
 
-    // not updated
+    // roi cropping
     Mat isolate(Mat frame);
     Rect mkbox(Mat frame, double *frontier);
+    Mat trapeziumroi(Mat &frame);
+    void magicwand(Mat image);
+
     Mat chunk(Mat frame);
-    void refineMask(Mat &frame);
     Rect mkcbox(Mat frame);
-    void minmax(Mat frame);
+
+    // colors
+    void minmaxroi(Mat roi, Scalar &min, Scalar &max);
+    void minmax(Mat frame, bool e);
     void updsclr(); // update scalar masking
     
 };
 
 #endif // PATHCHASER_H
+
+
+/*
+lower 17 181 126
+upper 25 249 179
+*/

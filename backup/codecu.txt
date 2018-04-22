@@ -1,13 +1,31 @@
 #include "pathchaser.h"
 #define debug
 
+// #define debug_colorsearch
+// #define debug_rmnoise_mask
+
+// #define debug_birdview
+// #define debug_preprocess
+// #define debug_noiseremove
+
+/* graph 1: debug segmentation, clustering, fitline and fitline intersection */
+// #define debug_graph1
+// #define debug_segment
+// #define debug_clustering
+// #define debug_fitline
+// #define debug_intersect
+
+/* graph 2: debug cluster grouping */
+// #define debug_graph2
+// #define debug_cluster_grouping
+// #define debug_threeway_detect
 
 #define dev
 
 PathChaser::PathChaser()
 {
     this->isobox = new double[4 * sizeof(double)]
-        {0.4, 0.0, 0.0, 0.0}; // T - R - B - L
+        {0.5, 0.0, 0.0, 0.0}; // T - R - B - L
     this->clrbox = new double[4 * sizeof(double)](); // X, Y, W, H
 
     #ifndef dev
@@ -35,42 +53,12 @@ PathChaser::PathChaser()
     this->frc = 0;
     this->mc = 10;
 
-    // this->tbxLW = this->tbxHW = this->tbxH = this->tbxX = this->tbxY = 0;
-
     this->settrackbar();
 }
 
-void PathChaser::laplacian(Mat src, Mat &sharp, Mat &lapla) {
-
-    // #define show_sharp
-    // #define show_lapla 
-
-    Mat kernel = (Mat_<float>(3,3) <<
-            1,  1, 1,
-            1, -8, 1,
-            1,  1, 1); 
-    sharp = src;
-
-    filter2D(sharp, lapla, CV_32F, kernel);
-    
-    src.convertTo(sharp, CV_32F);
-    
-    sharp = sharp - lapla;
-
-    sharp.convertTo(sharp, CV_8UC3);
-    lapla.convertTo(lapla, CV_8UC3);
-
-    #ifdef show_sharp
-    imshow("image sharped", sharp);
-    #endif
-
-    #ifdef show_lapla
-    imshow("laplacian", lapla);
-    #endif
-}
-
-
 Mat PathChaser::roadshape(Mat frame) {
+    show("original", frame);
+
     Mat morph = frame.clone();
     for (int r = 1; r < 4; r++)
     {
@@ -93,21 +81,15 @@ Mat PathChaser::roadshape(Mat frame) {
     /* merge the channels */
     merge(ch, 3, merged);
 
-    Mat lapla;
-    this->laplacian(merged, merged, lapla);
+    show("merged", merged);
 
-    return merged;
+    Mat s2 = this->chunk(frame);
+    show("s2", s2);
+
+    return frame;
 }
 
 Mat PathChaser::roadline(Mat frame) {
-    
-    Mat image = frame.clone();
-
-    this->raw_mat = image.clone();
-
-    this->chunk(image);
-
-    return image;
 
     // set basic variables
     if (this->cpLimlv <= 0 || this->cpLimlv > this->cpMaxlv) {
@@ -121,14 +103,16 @@ Mat PathChaser::roadline(Mat frame) {
     this->cpFlmHB = seg_h * (this->cpLimFlH + 1);
     this->cpFlmLB = seg_h * (this->cpLimFlL + 1);
 
+    Mat image = frame.clone();
+
     // shape analysis
-    image = this->roadshape(image);
+    this->roadshape(image);
 
-    show("merged", image);
+    // line analysis
+    
+    this->raw_mat = image.clone();
 
-    image = this->bird(image);
-
-    // image = this->skeletonization(image);
+    image = this->bird(frame);
 
     image = this->preprocess(image);
 
@@ -523,71 +507,6 @@ Point2f PathChaser::rightmostPoint(vector<Point2f> points, double endX) {
     return r;
 }
 
-Mat PathChaser::skeletonization(Mat inputImage)
-{
-    Mat outputImage;
-    cvtColor(inputImage, outputImage, CV_BGR2GRAY);
-
-    threshold(outputImage, outputImage, 0, 255, THRESH_BINARY+THRESH_OTSU);
-
-    this->thinning(outputImage);
-
-    show("outputImage", outputImage);
-
-    return inputImage;
-}
-
-void PathChaser::thinningIteration(Mat& im, int iter)
-{
-    Mat marker = Mat::zeros(im.size(), CV_8UC1);
-
-    for (int i = 1; i < im.rows-1; i++)
-    {
-        for (int j = 1; j < im.cols-1; j++)
-        {
-            uchar p2 = im.at<uchar>(i-1, j);
-            uchar p3 = im.at<uchar>(i-1, j+1);
-            uchar p4 = im.at<uchar>(i, j+1);
-            uchar p5 = im.at<uchar>(i+1, j+1);
-            uchar p6 = im.at<uchar>(i+1, j);
-            uchar p7 = im.at<uchar>(i+1, j-1);
-            uchar p8 = im.at<uchar>(i, j-1);
-            uchar p9 = im.at<uchar>(i-1, j-1);
-
-            int A  = (p2 == 0 && p3 == 1) + (p3 == 0 && p4 == 1) +
-                     (p4 == 0 && p5 == 1) + (p5 == 0 && p6 == 1) +
-                     (p6 == 0 && p7 == 1) + (p7 == 0 && p8 == 1) +
-                     (p8 == 0 && p9 == 1) + (p9 == 0 && p2 == 1);
-            int B  = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9;
-            int m1 = iter == 0 ? (p2 * p4 * p6) : (p2 * p4 * p8);
-            int m2 = iter == 0 ? (p4 * p6 * p8) : (p2 * p6 * p8);
-
-            if (A == 1 && (B >= 2 && B <= 6) && m1 == 0 && m2 == 0)
-                marker.at<uchar>(i,j) = 1;
-        }
-    }
-
-    im &= ~marker;
-}
-
-void PathChaser::thinning(Mat& im)
-{
-    im /= 255;
-
-    Mat prev = Mat::zeros(im.size(), CV_8UC1);
-    Mat diff;
-
-    do {
-        this->thinningIteration(im, 0);
-        this->thinningIteration(im, 1);
-        absdiff(im, prev, diff);
-        im.copyTo(prev);
-    }
-    while (countNonZero(diff) > 0);
-
-    im *= 255;
-}
-
 void PathChaser::video(string v, int wk) {
     VideoCapture cap(v);
 
@@ -601,8 +520,7 @@ void PathChaser::video(string v, int wk) {
     this->frc --;
     while (1) {
         cap >> frame;
-        this->current_ticks = clock();
-
+    
         this->frc++;
         if (this->frc >= cap.get(cv::CAP_PROP_FRAME_COUNT)) {
             this->frc = 1;
@@ -636,9 +554,6 @@ void PathChaser::video(string v, int wk) {
             pause = true;
         }
         
-
-        this->delta_ticks = clock() - this->current_ticks;
-        if(delta_ticks > 0) this->fps = CLOCKS_PER_SEC / this->delta_ticks;
     }
 
 }
@@ -683,11 +598,8 @@ void PathChaser::drawcloudpoints(vector<vector<Point2f>> points, Mat frame) {
 
 void PathChaser::drawfc(Mat frame) {
     String val = "Frame: " + to_string(this->frc);
-    String val2 = "FPS: " + to_string(this->fps);
     Point pos = Point(10, frame.rows - 10);
-    Point pos2 = Point(10, frame.rows - 28);
     cv::putText(frame, val, pos, cv::FONT_HERSHEY_SIMPLEX, 0.6, this->clrwht, 1, 8);
-    cv::putText(frame, val2, pos2, cv::FONT_HERSHEY_SIMPLEX, 0.6, this->clrwht, 1, 8);
 }
 
 Mat PathChaser::draw(Mat frame, Rect box, String label) {
@@ -812,296 +724,46 @@ Mat PathChaser::bird(Mat source) {
     return destination;
 }
 
-Mat PathChaser::trapeziumroi(Mat &frame) {
-    int rows = frame.rows;
-    int cols = frame.cols;
-    
-    Mat img = Mat::zeros(frame.size(), CV_8UC3);
-    Mat mask(frame.size(), CV_8UC1, Scalar::all(0));
-    Mat spl = frame.clone();
-
-    Size roisize(this->tbxLW, this->tbxH);
-
-    Point a, b, c, d;
-    if (this->tbxX == 0) this->tbxX = rows / 2 + this->tbxLW / 2;
-
-    a = Point(this->tbxX - this->tbxLW / 2, rows - this->tbxY);
-    b = Point(a.x + (this->tbxLW - this->tbxHW) / 2, a.y - this->tbxH);
-    c = Point(b.x + this->tbxHW, b.y);
-    d = Point(a.x + this->tbxLW, a.y);
-
-    line(spl, a, b, this->clrwht);
-    line(spl, b, c, this->clrwht);
-    line(spl, c, d, this->clrwht);
-    line(spl, d, a, this->clrwht);
-
-    vector<Point> points;
-    
-    points.push_back(a);
-    points.push_back(b);
-    points.push_back(c);
-    points.push_back(d);
-
-    vector<Point> roipoly;
-
-    approxPolyDP(points, roipoly, 1.0, true);
-
-    fillConvexPoly(mask, &roipoly[0], roipoly.size(), 255, 8, 0);
-
-    frame.copyTo(img, mask);
-    
-    // crop black edges
-    Mat bin;
-    inRange(img, Scalar(0,0,0), Scalar(0,0,0), bin);
-    bitwise_not(bin, bin);
-    
-    vector<vector<Point> > contours;
-    vector<Vec4i> hierarchy;
-    findContours(bin, contours, hierarchy, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE, Point(0, 0) );
-    vector<Point> contour = contours[0];
-
-    vector<Point> poly;
-    approxPolyDP( Mat(contour), poly, 10, true );
-    Rect rect = boundingRect(poly);
-
-    img = img(rect);
-    
-    #ifdef debug
-    #ifdef debug_chunk_trapazoid
-    imshow("Trapazoid ROI", img);
-    show(this->dbwn8, spl);
-    #endif
-    #endif
-
-    return img;
-
-}
 
 Mat PathChaser::chunk(Mat frame) {
     Mat image = frame.clone();
+    Mat eqal;
 
-    image = this->isolate(image);
 
-    Mat roiframe = image.clone();
-    Mat roiimg = image.clone();
-    roiimg = this->trapeziumroi(roiframe);
-
-    // find min max value of color
-    this->minmax(roiimg, true);
-
-    // update scalar value
-    this->updsclr();
-
-    // get mask from new color range
-    Mat blur = image.clone();
-    cv::blur(image, blur, Size(5, 5));
-
-    // bilateralFilter(image, blur, 15, 30, 1, BORDER_DEFAULT);
-    // show("image", blur);
-    Mat mask = Mat::zeros(image.size(), CV_8UC1), hsv;
-    cvtColor(blur, hsv, COLOR_BGR2HSV);
-    inRange(hsv, this->lower, this->upper, mask);
-
-    for (int r = 1; r < 6; r++) {
-        Mat kernel = getStructuringElement(MORPH_ELLIPSE, Size(2*r+1, 2*r+1));
-        morphologyEx(mask, mask, CV_MOP_CLOSE, kernel);
-        morphologyEx(mask, mask, CV_MOP_OPEN, kernel);
-    }
-
-    vector<vector<Point>> contours;
-    findContours(mask, contours, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0));
-
-    
-
-    double maxarea = -1;
-    for_each(contours.begin(), contours.end(), [&](vector<Point> contour) {
-        double area = contourArea(contour);
-        if (maxarea == -1) {
-            maxarea = area;
-        } else {
-            if (area > maxarea) {
-                maxarea = area;
-                contours[0] = contour;
-            }
-        }
-    });
-
-    drawContours(image, contours, 0, this->randclr());
-
-    
-
-    // fill image in mask
-    
-    Mat filler = Mat::zeros(image.size(), CV_8UC3);
-
-    image.copyTo(filler, mask);
-
-    
-    show("filler", filler);
-
-    // Mat edges = this->roadshape(filler);
-    // show("edges", edges);
-
-    filler = this->preprocess(filler);
-
-    this->magicwand(filler);
-
-    show("path line", filler);
-
-    show("image", mask);
-   
-    return image;
-}
-
-vector<Vec4i> PathChaser::findHoughLines(Mat mask, Mat &output) {
-    vector<Vec4i> lines;
-    HoughLinesP(mask, lines, 1, CV_PI/180, 80, 30, 10 );
-    cout << lines.size() << endl;
-    for (int i = 0; i < lines.size(); i++) {
-         line(output, Point(lines[i][0], lines[i][1]),
-            Point(lines[i][2], lines[i][3]), Scalar(0,0,255), 3, 8 );
-    }
-    return lines;
-}
-
-void PathChaser::magicwand(Mat image) {
     Rect cbx = this->mkcbox(image);
     Mat reg = image(cbx);
 
     #ifdef debug
-    // frame = this->draw(image, cbx, "box");
-    // show("origin", frame);
+    frame = this->draw(image, cbx, "box");
+    imshow("region", reg);
     #endif
 
-    Mat hsv, mask;
+    Mat mask;
+
+    // find min max value of color
+    this->minmax(reg, true);
+
+    // update scalar value
+    this->updsclr();
+
+    blur(image, image, Size(5, 5));
+
+    Mat hsv;
     cvtColor(image, hsv, COLOR_BGR2HSV);
 
     inRange(hsv, this->lower, this->upper, mask);
 
-    // show("ctr0", mask);
+    // noise removal
+    bitwise_not(mask, mask);
 
-    vector<Rect> roirects;
-
-    Mat ctr1 = this->findCtrMask(mask, roirects);
-    show("ctr1", ctr1);
-
-    rectangle(image, cbx, this->clrwht, 2);
-
-    string a = format("%d %d %d", (int)this->lower[0], (int)this->lower[1], (int)this->lower[2]);
-    string b = format("%d %d %d", (int)this->upper[0], (int)this->upper[1], (int)this->upper[2]);
-    putText(image, a, Point(cbx.x, cbx.y), FONT_HERSHEY_COMPLEX, 0.5, this->clrwht, 1, 8, 0);
-    putText(image, b, Point(cbx.x, cbx.y + 10), FONT_HERSHEY_COMPLEX, 0.5, this->clrwht, 1, 8, 0);
-
-    for (int i = 0; i < roirects.size(); i++) {
-        Rect rect = roirects.at(i);
-        Mat roi = image(rect);
-        Scalar min, max;
-        this->minmaxroi(roi, min, max);
-
-        Scalar color = this->randclr();
-
-        string s1 = format("%d %d %d", (int)min[0], (int)min[1], (int)min[2]);
-        string s2 = format("%d %d %d", (int)max[0], (int)max[1], (int)max[2]);
-        putText(image, s1, Point(rect.x, rect.y), FONT_HERSHEY_COMPLEX, 0.5, color, 1, 8, 0);
-        putText(image, s2, Point(rect.x, rect.y + 10), FONT_HERSHEY_COMPLEX, 0.5, color, 1, 8, 0);
-
-        rectangle(image, rect, color, 1);
-    }
-
-    show("magic wand result", image);
-}
-
-Mat PathChaser::findCtrMask(Mat bin, vector<Rect> &roirects) {
-    vector<vector<Point> > contours;
-    vector<Vec4i> hierarchy;
-
-    findContours(bin, contours, hierarchy, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE, Point(0, 0) );
-
-    vector<vector<Point> > contours_poly( contours.size() );
-    vector<Rect> boundRect(contours.size());
-    vector<Point2f>center(contours.size());
-    vector<float>radius(contours.size());
-
-    for(int i = 0; i < contours.size(); i++) {
-        approxPolyDP( Mat(contours[i]), contours_poly[i], 10, true );
-        boundRect[i] = boundingRect( Mat(contours_poly[i]) );
-        minEnclosingCircle( (Mat)contours_poly[i], center[i], radius[i] );
-    }   
-
-    Mat morph = bin.clone();
-
-    for (int r = 1; r < 4; r++) {
-        Mat kernel = getStructuringElement(MORPH_ELLIPSE, Size(2*r+1, 2*r+1));
-        morphologyEx(morph, morph, CV_MOP_CLOSE, kernel);
-        morphologyEx(morph, morph, CV_MOP_OPEN, kernel);
-    }
-
-    Mat drawing = Mat::zeros(morph.size(), CV_8UC3 );
-    for(int i = 0; i < contours.size(); i++ ) {
-        double area = contourArea(contours.at(i));
-
-        if (area <= 50) continue;
-    
-        Scalar color = this->randclr();
-        drawContours(drawing, contours_poly, i, color, 1, 8, vector<Vec4i>(), 0, Point());
-        
-        vector<Point> ctrpoly = contours_poly[i];
-        for (int j = 0; j < ctrpoly.size(); j++) {
-            if (j % 3 == 0) {
-                color = this->randclr();
-                int r = 20;
-                Rect rect(ctrpoly[j].x - r, ctrpoly[j].y - r, r * 2, r * 2);
-                if (rect.x >= 0 && rect.y >= 0 && rect.x + rect.width < bin.cols && rect.y + rect.height < bin.rows) {
-                    roirects.push_back(rect);
-                    rectangle(drawing, rect, color, 1);
-                }
-            }
-        }
-
-        // rectangle(drawing, boundRect[i].tl(), boundRect[i].br(), color, 2, 8, 0);
-        // circle(drawing, center[i], (int)radius[i], color, 2, 8, 0);
-    }
-    
-    show("drawing", drawing);
-
-    return morph;
-
-}
-
-void PathChaser::minmaxroi(Mat roi, Scalar &min, Scalar &max) {
-    /*
-    * Feature: pass lower and upper color of rame to min, max variable of class
-    */
-
-   min = Scalar(255, 255, 255);
-   max = Scalar(0, 0, 0);
-
-    Mat hsv; cvtColor(roi, hsv, cv::COLOR_BGR2HSV);
-
-    int cn = hsv.channels();
-    int cl = hsv.cols;
-    int rw = hsv.rows;
-
-    for(int y = 0; y < rw; y++) {
-        for(int x = 0; x < cl; x++) {
-            /* B0-G1-R2 */
-            int b = hsv.at<cv::Vec3b>(y,x)[0];
-            int g = hsv.at<cv::Vec3b>(y,x)[1];
-            int r = hsv.at<cv::Vec3b>(y,x)[2];
-
-            min[0] = b < min[0] ? b : min[0];
-            min[1] = g < min[1] ? g : min[1];
-            min[2] = r < min[2] ? r : min[2];
-
-            max[0] = b > max[0] ? b : max[0];
-            max[1] = g > max[1] ? g : max[1];
-            max[2] = r > max[2] ? r : max[2];
-        }
-    }
+    vector<vector<Point>> contours;
+    findContours(mask, contours, RETR_LIST, CHAIN_APPROX_SIMPLE);
 
     #ifdef debug
-        // cout << min << " " << max << endl;
+    show("mask after", mask);
     #endif
+
+    return frame;
 }
 
 void PathChaser::minmax(Mat frame, bool e) {
@@ -1138,20 +800,18 @@ void PathChaser::minmax(Mat frame, bool e) {
             int g = hsv.at<cv::Vec3b>(y,x)[1];
             int r = hsv.at<cv::Vec3b>(y,x)[2];
 
-            if (b == 0 && g == 0 && r == 0) continue;
-
             #ifndef debug_colorsearch 
             this->min[0] = b < this->min[0] ? b : this->min[0];
             this->min[1] = g < this->min[1] ? g : this->min[1];
             this->min[2] = r < this->min[2] ? r : this->min[2];
 
-            // this->max[0] = b > this->max[0] ? b : this->max[0];
-            // this->max[1] = g > this->max[1] ? g : this->max[1];
-            // this->max[2] = r > this->max[2] ? r : this->max[2];
+            this->max[0] = b > this->max[0] ? b : this->max[0];
+            this->max[1] = g > this->max[1] ? g : this->max[1];
+            this->max[2] = r > this->max[2] ? r : this->max[2];
             
-            this->max[0] = 255;
-            this->max[1] = 255;
-            this->max[2] = 255;
+            // this->max[0] = 255;
+            // this->max[1] = 255;
+            // this->max[2] = 255;
 
             #endif
         }
@@ -1193,21 +853,23 @@ Mat PathChaser::preprocess(Mat frame) {
 }
 
 Mat PathChaser::masknoisermv(Mat mask) {
-    Size erosize = Size(this->ppEroW + 1, this->ppEroH + 1);
-    Point eropnt = Point(this->ppEroW, this->ppEroH);
-    Mat eroele = getStructuringElement(this->ppEroType, erosize, eropnt);
-    cv::erode(mask, mask, eroele, Point(0, 0), this->ppEroIt);
+    //  Mat image = frame.clone();
 
-    Size dltsize = Size(this->ppDltW + 1, this->ppDltH + 1);
-    Point dltpnt = Point(this->ppDltW, this->ppDltH);
-    Mat dltele = getStructuringElement(this->ppDltType, dltsize, dltpnt);
-    cv::dilate(mask, mask, dltele, Point(0, 0), this->ppDltIt);
+    // Size erosize = Size(this->ppEroW + 1, this->ppEroH + 1);
+    // Point eropnt = Point(this->ppEroW, this->ppEroH);
+    // Mat eroele = getStructuringElement(this->ppEroType, erosize, eropnt);
+    // cv::erode(image, image, eroele, Point(0, 0), this->ppEroIt);
 
-    // this->ctrclean(image);
+    // Size dltsize = Size(this->ppDltW + 1, this->ppDltH + 1);
+    // Point dltpnt = Point(this->ppDltW, this->ppDltH);
+    // Mat dltele = getStructuringElement(this->ppDltType, dltsize, dltpnt);
+    // cv::dilate(image, image, dltele, Point(0, 0), this->ppDltIt);
 
-    #ifdef debug_noiseremove
-    show(this->dbwn3, mask);
-    #endif
+    // // this->ctrclean(image);
+
+    // #ifdef debug_noiseremove
+    // show(this->dbwn3, image);
+    // #endif
     return mask;
 }
 
@@ -1564,13 +1226,6 @@ float PathChaser::param(string key) {
 
 void PathChaser::fillparam() {
 
-    // color box trapazoid
-    this->tbxLW = this->param("clrtrp_lw");
-    this->tbxHW = this->param("clrtrp_hw");
-    this->tbxH = this->param("clrtrp_h");
-    this->tbxX = this->param("clrtrp_x");
-    this->tbxY = this->param("clrtrp_y");
-
     // color box
     this->clrbox[0] = this->param("clrbox_x");
     this->clrbox[1] = this->param("clrbox_y");
@@ -1619,16 +1274,6 @@ void PathChaser::fillparam() {
 
 void PathChaser::settrackbar() {
     #ifdef debug
-
-    #ifdef debug_chunk_trapazoid
-    this->dbwn8 = "Trapazoid ROI Area";
-    namedWindow(this->dbwn8, 1);
-    createTrackbar("X", this->dbwn8, &this->tbxX, 1000, PathChaser::debugger, this);
-    createTrackbar("Y", this->dbwn8, &this->tbxY, 1000, PathChaser::debugger, this);
-    createTrackbar("LW", this->dbwn8, &this->tbxLW, 1000, PathChaser::debugger, this);
-    createTrackbar("HW", this->dbwn8, &this->tbxHW, 1000, PathChaser::debugger, this);
-    createTrackbar("H", this->dbwn8, &this->tbxH, 1000, PathChaser::debugger, this);
-    #endif
 
     #ifdef debug_rmnoise_mask
     this->dbwn7 = "remove noise mask";
@@ -2058,6 +1703,7 @@ void PathChaser::debugger(int, void* x) {
     PathChaser *d = (PathChaser *) x;
 
     d->clsAglFm = (double) d->mgAgl / 100;
+    cout << d->clsAglFm << endl;
 
     d->roadline(d->raw_mat);
 }
