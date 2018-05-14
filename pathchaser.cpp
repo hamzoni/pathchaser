@@ -1,13 +1,14 @@
 #include "pathchaser.h"
-#define debug
+// #define debug
 
 
 #define dev
 
 PathChaser::PathChaser()
 {
-    this->isobox = new double[4 * sizeof(double)]
-        {0.4, 0.0, 0.0, 0.0}; // T - R - B - L
+    this->clingleft = true;
+
+    this->isobox = new double[4 * sizeof(double)](); // T - R - B - L
     this->clrbox = new double[4 * sizeof(double)](); // X, Y, W, H
 
     #ifndef dev
@@ -35,7 +36,8 @@ PathChaser::PathChaser()
     this->frc = 0;
     this->mc = 10;
 
-    // this->tbxLW = this->tbxHW = this->tbxH = this->tbxX = this->tbxY = 0;
+    // default frame size
+    this->fsize = Size(640, 480);
 
     this->settrackbar();
 }
@@ -99,49 +101,114 @@ Mat PathChaser::roadshape(Mat frame) {
     return merged;
 }
 
-Mat PathChaser::roadline(Mat frame) {
-    
+double PathChaser::roadlineOTSU(Mat frame) {
+
+    double angle = 0;
+
     Mat image = frame.clone();
 
     this->raw_mat = image.clone();
-
-    this->chunk(image);
-
-    return image;
 
     // set basic variables
     if (this->cpLimlv <= 0 || this->cpLimlv > this->cpMaxlv) {
         this->cpLimlv = this->cpMaxlv;
     }
 
-    this->fsize = Size(frame.cols, frame.rows);
+    this->fsize = Size(image.cols, image.rows);
+
     // set segment height
-    double seg_h = ((double) frame.rows / this->cpMaxlv);
+    double seg_h = ((double) image.rows / this->cpMaxlv);
     this->cpSegmH = seg_h * (this->cpLimlv + 1);
     this->cpFlmHB = seg_h * (this->cpLimFlH + 1);
     this->cpFlmLB = seg_h * (this->cpLimFlL + 1);
 
-    // shape analysis
-    image = this->roadshape(image);
+    // new code
+    frame = this->roadshape(frame);
 
-    show("merged", image);
+    Mat rgb = frame.clone();
 
-    image = this->bird(image);
+    Mat gray;
+    cvtColor(rgb, gray, COLOR_BGR2GRAY);
+    
+    Mat thresh;
+    threshold(gray, thresh, 125, 255, THRESH_BINARY);
 
-    // image = this->skeletonization(image);
+    Mat bird = this->bird(thresh);
 
-    image = this->preprocess(image);
+    bird = this->masknoisermv(bird);
 
-    image = this->noiseremove(image);
+    #ifdef debug
+    show("rgb", rgb);
+    show("thresh", thresh);
+    show("bird", bird);
+    #endif
 
-    vector<Mat> parts = this->segment(image, this->cpMaxlv);
+    bird.convertTo(bird, CV_8UC3);
 
-    // gen points and clustering same time
-
-    vector<Point2f> points = this->genpoints(parts);
-
+    // bird = this->noiseremove(bird);
+    
+    vector<Mat> parts = this->segment(bird, this->cpMaxlv);
     vector<vector<Point2f>> gclusters = this->gencluster(parts);
 
+    angle = this->calcAngle(gclusters[0], gclusters[1]);
+
+    angle = this->rtd(angle, 90) * -1;
+
+    return angle;
+}
+
+double PathChaser::roadline(Mat frame) {
+    
+    double angle = this->roadlineOTSU(frame);
+
+    return angle;
+
+    Mat image = frame.clone();
+    this->raw_mat = image.clone();
+
+    // set basic variables
+    if (this->cpLimlv <= 0 || this->cpLimlv > this->cpMaxlv) {
+        this->cpLimlv = this->cpMaxlv;
+    }
+
+    this->fsize = Size(image.cols, image.rows);
+    // set segment height
+    double seg_h = ((double) image.rows / this->cpMaxlv);
+    this->cpSegmH = seg_h * (this->cpLimlv + 1);
+    this->cpFlmHB = seg_h * (this->cpLimFlH + 1);
+    this->cpFlmLB = seg_h * (this->cpLimFlL + 1);
+
+    Mat w1,w2,w3,w4,w5,w6;
+
+
+    w1 = this->chunk(image);
+
+    w2 = this->bird(w1);
+
+    w3 = this->noiseremove(w2);
+
+    #ifdef show_cloak
+
+    show("Image root", image);
+    show("Bird's view", w1);
+    show("After chunk", w2);
+
+    #endif
+
+    vector<Mat> parts = this->segment(w3, this->cpMaxlv);
+
+    // gen points and clustering same time
+    vector<vector<Point2f>> gclusters = this->gencluster(parts);
+
+    angle = this->calcAngle(gclusters[0], gclusters[1]);
+
+    angle = this->rtd(angle, 90) * -1;
+
+    return angle;
+
+    vector<Point2f> points = this->genpoints(parts);
+    
+    // this->groupByLine(points);
 
     // clustering #1
     vector<vector<Point2f>> clusters = this->dbscan(points, 40);
@@ -209,7 +276,11 @@ Mat PathChaser::roadline(Mat frame) {
         // if (clusters2.size() >= 1) waitKey();
     #endif
 
-    return image;
+    return angle;
+}
+
+double PathChaser::rtd(double rad, double phi = 0) {
+    return (rad * 180) / CV_PI - phi;
 }
 
 vector<vector<Point2f>> PathChaser::gencluster(vector<Mat> parts) {
@@ -232,12 +303,15 @@ vector<vector<Point2f>> PathChaser::gencluster(vector<Mat> parts) {
 
     /* analyze all points */
 
-    vector<vector<Point2f>> groups = this->dbscan(points, 60);
+    vector<vector<Point2f>> groups = this->dbscan(points, 30);
     vector<vector<Point2f>> twcrps; // 3-ways cross road points
     vector<vector<Point2f>> sdpths; // side path road points
-
+    
+    Mat cltgrp = Mat::zeros(this->fsize, CV_8UC3);
     int k = 0;
     for_each(groups.begin(), groups.end(), [&](vector<Point2f> group) {
+        // display clusters
+        this->drawpoints(group, cltgrp, this->randclr());
         
         // find lowest point - v bottom
         Point2f vtp = group.at(0);
@@ -324,7 +398,7 @@ vector<vector<Point2f>> PathChaser::gencluster(vector<Mat> parts) {
                 
                 rectangle(graph, rbn, this->clrred);
 
-                // show("debug three way crossroads points", graph);
+                show("debug three way crossroads points", graph);
                 #endif
 
                 // convert draw only path on screen
@@ -347,6 +421,7 @@ vector<vector<Point2f>> PathChaser::gencluster(vector<Mat> parts) {
     });
 
     vector<Point2f> onlysides;
+
     for_each(sdpths.begin(), sdpths.end(), [&](vector<Point2f> group) {
         for_each(group.begin(), group.end(), [&](Point2f point) {
             onlysides.push_back(point);
@@ -356,18 +431,166 @@ vector<vector<Point2f>> PathChaser::gencluster(vector<Mat> parts) {
     // create graph that has no 3 way line
     Mat graph3 = Mat::zeros(fsize, CV_8UC1);
     this->drawpoints(onlysides, graph3, this->clrwht);
+    
     vector<Mat> parts2 = this->segment(graph3, this->cpMaxlv);
 
     vector<Point2f> leftside;
     vector<Point2f> rightside;
-    this->findside(leftside, rightside, parts2);
 
+    this->findside(leftside, rightside, parts2);
+    
+    clusters.push_back(leftside); // 0
+    clusters.push_back(rightside); // 1
+
+    #ifdef shop_clot
     Mat graph5 = Mat::zeros(fsize, CV_8UC1);
     this->drawpoints(points, graph5, this->clrwht);
-    // show("before find side", graph5);
+    
+    Mat graph6 = Mat::zeros(fsize, CV_8UC3);
+    this->drawpoints(leftside, graph6, this->clrblu);
+    this->drawpoints(rightside, graph6, this->clrylw);
+
+    show("before find side", graph5);
+
+    if (leftside.size() == 0 || rightside.size() == 0)
+        return clusters;
+
+    Vec4f ll = this->fitlines(leftside);
+    Vec4f rl = this->fitlines(rightside);
+
+    int lwb = this->cpFlmLB;
+    int upb = this->cpFlmHB;
+    Size sf = this->fsize; // after cropped mat
+    Size sfs = this->raw_mat.size(); // before cropped mat
+
+    vector<Point2f> lp = this->getlinepoint(ll, sf, lwb, upb);
+    vector<Point2f> rp = this->getlinepoint(rl, sf, lwb, upb);
+
+    // three top points
+    Point2f alp = lp[1];
+    Point2f arp = rp[1];
+    Point2f acp = this->mpoint(alp, arp);
+
+    // one center lower point
+    Point2f lcp(sfs.width / 2, sfs.height);
+
+    //left and right lower
+    Point2f lbp(0, sfs.height);
+    Point2f rbp(sfs.width, sfs.height);
+
+    // calculate vectors
+    Point2f mlv = this->fvect(acp, lcp); // mid center line vector
+    Point2f blv = this->fvect(lcp, lbp); // lower left vector
+    Point2f brv = this->fvect(lcp, rbp); // lower right vector
+
+    // cling vector
+    Point2f lvt = this->fvect(lcp, alp);
+    Point2f rvt = this->fvect(lcp, arp);
+
+    // draw top three points
+    this->drawpoint(alp, graph6, this->clrylw);
+    this->drawpoint(acp, graph6, this->clrgrn);
+    this->drawpoint(arp, graph6, this->clrylw);
+
+    // draw lower center point
+    this->drawpoint(lcp, graph6, this->clrgrn);
+
+    // draw two side line
+    this->drawline(ll, graph6, this->clrblu);
+    this->drawline(rl, graph6, this->clrred);
+
+    // draw connect top and low center points
+    line(graph6, acp, lcp, this->clrgrn, 3, 8, 0);
+
+    show("after find side", graph6);
+    show("points grouping", cltgrp);
+    #endif
 
     return clusters;
+}
 
+double PathChaser::calcAngle(vector<Point2f> left, vector<Point2f> right) {
+    double angle = -1;
+
+    if (left.size() == 0 || right.size() == 0) {
+        return 0;
+    }
+
+    Vec4f ll = this->fitlines(left);
+    Vec4f rl = this->fitlines(right);
+
+    int lwb = this->cpFlmLB;
+    int upb = this->cpFlmHB;
+    Size sf = this->fsize; // after cropped mat
+    Size sfs = this->raw_mat.size(); // before cropped mat
+
+    vector<Point2f> lp = this->getlinepoint(ll, sf, lwb, upb);
+    vector<Point2f> rp = this->getlinepoint(rl, sf, lwb, upb);
+
+    // three top points
+    Point2f alp = lp[1];
+    Point2f arp = rp[1];
+    Point2f acp = this->mpoint(alp, arp);
+
+    // one center lower point
+    Point2f lcp(sfs.width / 2, sfs.height);
+
+    //left and right lower
+    Point2f lbp(0, sfs.height);
+    Point2f rbp(sfs.width, sfs.height);
+
+    // calculate vectors
+    Point2f mlv = this->fvect(acp, lcp); // mid center line vector
+    Point2f blv = this->fvect(lcp, lbp); // lower left vector
+    Point2f brv = this->fvect(lcp, rbp); // lower right vector
+
+    // cling vector
+    Point2f lvt = this->fvect(lcp, alp);
+    Point2f rvt = this->fvect(lcp, arp);
+
+    // calculate angle
+    // if (this->clingleft) {
+    //     angle = this->avect(lvt, brv);
+    // } else {
+    //     angle = this->avect(rvt, brv);
+    // }
+    
+    angle = this->avect(mlv, brv);
+
+    #ifdef debug
+    
+    Mat aglmat = this->raw_mat.clone();
+
+    // draw top three points
+    this->drawpoint(alp, aglmat, this->clrylw);
+    this->drawpoint(acp, aglmat, this->clrgrn);
+    this->drawpoint(arp, aglmat, this->clrylw);
+
+    // draw lower center point
+    this->drawpoint(lcp, aglmat, this->clrgrn);
+
+    // draw two side line
+    this->drawline(ll, aglmat, this->clrblu);
+    this->drawline(rl, aglmat, this->clrred);
+
+    // draw connect top and low center points
+    line(aglmat, acp, lcp, this->clrgrn, 3, 8, 0);
+    // if (this->clingleft) {
+    //     line(aglmat, alp, lcp, this->clrgrn, 3, 8, 0);
+    // } else {
+    //     line(aglmat, arp, lcp, this->clrgrn, 3, 8, 0);
+    // }
+
+
+    show("angle mat", aglmat);
+
+    #endif
+
+    return angle;
+}
+
+Point2f PathChaser::mpoint(Point2f a, Point2f b) {
+    return Point2f((a.x + b.x) / 2, (a.y + b.y) / 2);
 }
 
 void PathChaser::findside(vector<Point2f> &left, vector<Point2f> &right, vector<Mat> parts) {
@@ -398,7 +621,7 @@ void PathChaser::findside(vector<Point2f> &left, vector<Point2f> &right, vector<
     // for (int i = 0; i < parts.size(); i++) {
         
         Mat part = parts.at(i);
-        
+
         // y position of center points
         double y = h * i;
 
@@ -461,16 +684,20 @@ void PathChaser::findside(vector<Point2f> &left, vector<Point2f> &right, vector<
         }
     }
 
+    #ifdef debug
     Mat graph = Mat::zeros(fsize, CV_8UC3);
     this->drawpoints(ctpoints, graph, this->clrylw);
     this->drawpoints(left, graph, this->clrwht);
     this->drawpoints(right, graph, this->clrwht);
-    // show("multiple points", graph);
+    show("multiple points", graph);
+    #endif
 }
 
 double PathChaser::closerLeft(vector<Point2f> points, double x) {
     if (points.size() == 0) return -1;
+    
     double r = -1;
+
     for_each(points.begin(), points.end(), [&](Point2f p) {
         if (p.x < x) {
             if (r == -1) {
@@ -484,12 +711,15 @@ double PathChaser::closerLeft(vector<Point2f> points, double x) {
         }
         
     });
+
     return r;
 }
 
 double PathChaser::closerRight(vector<Point2f> points, double x) {
     if (points.size() == 0) return -1;
+    
     double r = -1;
+
     for_each(points.begin(), points.end(), [&](Point2f p) {
         if (p.x > x) {
             if (r == -1) {
@@ -503,6 +733,7 @@ double PathChaser::closerRight(vector<Point2f> points, double x) {
         }
         
     });
+
     return r;
 }
 
@@ -588,7 +819,100 @@ void PathChaser::thinning(Mat& im)
     im *= 255;
 }
 
+void PathChaser::groupByLine(vector<Point2f> points) {
+     Mat frame = Mat::zeros(this->fsize, CV_8UC3);
+
+    Point2f A(this->fsize.width / 2, 0);
+    Point2f B = this->aglpoint(this->fsize.height);
+
+    this->drawpoint(A, frame, this->clrred);
+    this->drawpoint(B, frame, this->clrred);
+
+    
+    for (int i = 0; i < points.size(); i++) {
+        this->drawpoint(points.at(i), frame, this->clrblu);
+    }
+
+    line(frame, A, B, this->clrylw);
+
+    // calculate distance
+    vector<int> dists;
+    vector<vector<int>> indices;
+    for (int i = 0; i < points.size(); i++) {
+        Point2f p = points.at(i);
+        int d = this->calcPointDist(p);
+        dists.push_back(d);
+    }
+    
+    vector<vector<int>> groups = this->kmeand(dists, indices, this->cpbDist);
+
+
+    for (int i = 0; i < groups.size(); i++) {
+        Scalar clr = this->randclr();
+        for (int j = 0; j < groups.at(i).size(); j++) {
+            this->drawpoint(points.at(indices.at(i).at(j)), frame, clr);
+        }
+    }
+
+    show(this->dbwn9, frame);
+}
+
+void PathChaser::testAlgorithm() {
+
+    vector<Point2f> points;
+    for (int i = 0; i < 100; i++) {
+        double x = this->rng.uniform(0, 640);
+        double y = this->rng.uniform(0, 480);
+        Point2f p(x, y);
+        points.push_back(p);
+    }
+
+    this->groupByLine(points);
+   
+    waitKey();
+
+    // vector<int> items;
+    // items.push_back(5);
+    // items.push_back(1);
+    // items.push_back(4);
+    // items.push_back(3);
+    
+    // items.push_back(10);
+
+    // items.push_back(15);
+    // items.push_back(20);
+    // items.push_back(17);
+    
+
+    // /* 
+    // sample inputs: 
+    // 1,3,2,0  4   5  7  6
+    // 1,3,4,5, 10, 15,17,20
+
+    // d = 3: 1,3,4,5 10 15,17,20
+    // d = 5: 1,3,4,5,10,15,17,20;
+
+    // */
+    // vector<vector<int>> indices;
+    // vector<vector<int>> groups = this->kmeand(items, indices, 5);
+
+
+    // for (int i = 0; i < groups.size(); i++) {
+    //     cout << "Group " << i + 1 << endl;
+    //     for (int j = 0; j < groups.at(i).size(); j++) {
+    //         cout << groups.at(i).at(j) << " " << indices.at(i).at(j) << endl;
+    //     }
+    // }
+
+}
+
 void PathChaser::video(string v, int wk) {
+
+    #ifdef test_algorithm
+    this->testAlgorithm();
+    return;
+    #endif 
+
     VideoCapture cap(v);
 
     cap.set(CV_CAP_PROP_POS_FRAMES, this->frs);
@@ -613,13 +937,8 @@ void PathChaser::video(string v, int wk) {
         
         cv::cvtColor(frame, frame, cv::COLOR_RGB2BGR);
 
-
-
-        Mat s4 = this->roadline(frame);
-        // show("s4", s4);
-        
-
-
+        double angle = this->roadline(frame);
+        cout << angle << endl;
 
         ///// END OF PROCESSING /////
         if (!start || pause) waitKey();
@@ -635,7 +954,6 @@ void PathChaser::video(string v, int wk) {
         if (k == 110) { // pause + next frame
             pause = true;
         }
-        
 
         this->delta_ticks = clock() - this->current_ticks;
         if(delta_ticks > 0) this->fps = CLOCKS_PER_SEC / this->delta_ticks;
@@ -816,6 +1134,8 @@ Mat PathChaser::trapeziumroi(Mat &frame) {
     int rows = frame.rows;
     int cols = frame.cols;
     
+    
+    Mat raw = frame.clone();
     Mat img = Mat::zeros(frame.size(), CV_8UC3);
     Mat mask(frame.size(), CV_8UC1, Scalar::all(0));
     Mat spl = frame.clone();
@@ -824,6 +1144,8 @@ Mat PathChaser::trapeziumroi(Mat &frame) {
 
     Point a, b, c, d;
     if (this->tbxX == 0) this->tbxX = rows / 2 + this->tbxLW / 2;
+    if (this->tbxX >= frame.cols) this->tbxX = this->tbxX % frame.cols;
+    if (this->tbxY >= frame.rows) this->tbxY = this->tbxY % frame.rows;
 
     a = Point(this->tbxX - this->tbxLW / 2, rows - this->tbxY);
     b = Point(a.x + (this->tbxLW - this->tbxHW) / 2, a.y - this->tbxH);
@@ -848,33 +1170,160 @@ Mat PathChaser::trapeziumroi(Mat &frame) {
 
     fillConvexPoly(mask, &roipoly[0], roipoly.size(), 255, 8, 0);
 
-    frame.copyTo(img, mask);
+    raw.copyTo(img, mask);
     
     // crop black edges
     Mat bin;
     inRange(img, Scalar(0,0,0), Scalar(0,0,0), bin);
     bitwise_not(bin, bin);
-    
+
     vector<vector<Point> > contours;
     vector<Vec4i> hierarchy;
     findContours(bin, contours, hierarchy, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE, Point(0, 0) );
-    vector<Point> contour = contours[0];
-
     vector<Point> poly;
-    approxPolyDP( Mat(contour), poly, 10, true );
-    Rect rect = boundingRect(poly);
 
-    img = img(rect);
-    
-    #ifdef debug
-    #ifdef debug_chunk_trapazoid
-    imshow("Trapazoid ROI", img);
-    show(this->dbwn8, spl);
-    #endif
-    #endif
+    if (contours.size() > 0) {
+        vector<Point> contour = contours[0];
+        approxPolyDP(Mat(contour), poly, 10, true);
+
+        Rect rect = boundingRect(poly);
+
+        img = img(rect);
+
+        #ifdef debug
+        #ifdef debug_chunk_trapazoid
+        string roiname = "Trapazoid ROI";
+        imshow(roiname, img);
+        show(this->dbwn8, spl);
+        #endif
+        #endif
+    }
 
     return img;
 
+}
+
+void PathChaser::conv2(const cv::Mat &img, const cv::Mat& kernel, PathChaser::ConvolutionType type, cv::Mat& dest) {
+	cv::Mat source = img;
+	if(PathChaser::CONVOLUTION_FULL == type) {
+		source = Mat();
+		const int additionalRows = kernel.rows-1, additionalCols = kernel.cols-1;
+		copyMakeBorder(img, source, (additionalRows+1)/2, additionalRows/2, (additionalCols+1)/2, additionalCols/2, BORDER_CONSTANT, Scalar(0));
+	}
+
+	cv::Point anchor(kernel.cols - kernel.cols/2 - 1, kernel.rows - kernel.rows/2 - 1);
+	int borderMode = BORDER_CONSTANT;
+	cv::Mat fkernel;
+	flip(kernel, fkernel, -1);
+	cv::filter2D(source, dest, CV_64F, fkernel, anchor, 0, borderMode);
+
+	if(PathChaser::CONVOLUTION_VALID == type) {
+		dest = dest.colRange((kernel.cols-1)/2, dest.cols - kernel.cols/2)
+           .rowRange((kernel.rows-1)/2, dest.rows - kernel.rows/2);
+	}
+}
+
+double PathChaser::sqr(double x) {
+	return x * x;
+}
+
+bool PathChaser::isInRange(double val, double l, double r) {
+	return (l <= val && val <= r);
+}
+
+void PathChaser::waveletTransform(const cv::Mat& img, cv::Mat& edge, double threshold = 0.15) {
+    // https://github.com/fpt-corp/DriverlessCarChallenge_2017-2018/blob/master/example/lane_detection/api_lane_detection.cpp
+    
+	Mat src = img;
+	if (img.type() == 16)
+		cvtColor(img, src, CV_BGR2GRAY);
+	double pi = M_PI;
+	int SIZE = src.rows;
+	int SIZE1 = src.cols;
+	double m = 1.0;
+	double dlt = pow(2.0, m);
+	int N = 20;
+	double A = -1 / sqrt(2 * pi);//M_PI = acos(-1.0)
+	cv::Mat phi_x = cv::Mat(N, N, CV_64F);
+	cv::Mat phi_y = cv::Mat(N, N, CV_64F);
+	for(int idx = 1; idx <= N; ++idx) {
+        for(int idy = 1; idy <= N; ++idy) {
+			double x = idx - (N + 1) / 2.0;
+			double y = idy - (N + 1) / 2.0;
+			double coff = A / sqr(dlt) * exp(-(sqr(x) + sqr(y)) / (2 * sqr(dlt)));
+			phi_x.at<double>(idx - 1, idy - 1) = (coff * x);
+			phi_y.at<double>(idx - 1, idy - 1) = (coff * y);
+		}
+    }
+		
+	normalize(phi_x, phi_x);
+	normalize(phi_y, phi_y);
+	cv::Mat Gx, Gy;
+	conv2(src, phi_x, CONVOLUTION_SAME, Gx);
+	conv2(src, phi_y, CONVOLUTION_SAME, Gy);
+	cv::Mat Grads = cv::Mat(src.rows, src.cols, CV_64F);
+	for(int i = 0; i < Gx.rows; ++i)
+		for(int j = 0; j < Gx.cols; ++j) {
+			double x = Gx.at<double>(i, j);
+			double y = Gy.at<double>(i, j);
+			double sqx = sqr(x);
+			double sqy = sqr(y);
+			Grads.at<double>(i, j) = sqrt(sqx + sqy);
+		}
+	double mEPS = 100.0 / (1LL << 52);//matlab eps = 2 ^ -52
+	cv::Mat angle_array = cv::Mat::zeros(SIZE, SIZE1, CV_64F);
+	for(int i = 0; i < SIZE; ++i)
+		for(int j = 0; j < SIZE1; ++j) {
+			double p = 90;
+			if (fabs(Gx.at<double>(i, j)) > mEPS) {
+				p = atan(Gy.at<double>(i, j) / Gx.at<double>(i, j)) * 180 / pi;
+				if (p < 0) p += 360;
+				if (Gx.at<double>(i, j) < 0 && p > 180)
+					p -= 180;
+				else if (Gx.at<double>(i, j) < 0 && p < 180)
+					p += 180;
+			}
+			angle_array.at<double>(i, j) = p;
+		}
+	Mat edge_array = cv::Mat::zeros(SIZE, SIZE1, CV_64F);
+	for(int i = 1; i < SIZE - 1; ++i) {
+        for(int j = 1; j < SIZE1 - 1; ++j) {
+			double aval = angle_array.at<double>(i, j);
+			double gval = Grads.at<double>(i, j);
+			if (this->isInRange(aval,-22.5,22.5) || this->isInRange(aval, 180-22.5,180+22.5)) {
+				if (gval > Grads.at<double>(i+1,j) && gval > Grads.at<double>(i-1,j))
+					edge_array.at<double>(i, j) = gval;
+			}
+			else
+			if (this->isInRange(aval,90-22.5,90+22.5) || this->isInRange(aval,270-22.5,270+22.5)) {
+				if (gval > Grads.at<double>(i, j+1) && gval > Grads.at<double>(i, j-1))
+					edge_array.at<double>(i, j) = gval;
+			}
+			else
+			if(this->isInRange(aval,45-22.5,45+22.5) || this->isInRange(aval,225-22.5,225+22.5)) {
+				if (gval > Grads.at<double>(i+1,j+1) && gval > Grads.at<double>(i-1,j-1))
+					edge_array.at<double>(i,j) = gval;
+			}
+			else
+				if (gval > Grads.at<double>(i+1,j-1) && gval > Grads.at<double>(i-1,j+1))
+					edge_array.at<double>(i, j) = gval;
+		}
+    }
+		
+	double MAX_E = edge_array.at<double>(0, 0);
+	for(int i = 0; i < edge_array.rows; ++i)
+		for(int j = 0; j < edge_array.cols; ++j)
+			if (MAX_E < edge_array.at<double>(i, j))
+				MAX_E = edge_array.at<double>(i, j);
+	edge = Mat::zeros(src.rows, src.cols, CV_8U);
+	for(int i = 0; i < edge_array.rows; ++i)
+		for(int j = 0; j < edge_array.cols; ++j) {
+			edge_array.at<double>(i, j) /= MAX_E;
+			if (edge_array.at<double>(i, j) > threshold)
+				edge.at<uchar>(i, j) = 255;
+			else
+				edge.at<uchar>(i, j) = 0;
+		}
 }
 
 Mat PathChaser::chunk(Mat frame) {
@@ -896,8 +1345,7 @@ Mat PathChaser::chunk(Mat frame) {
     Mat blur = image.clone();
     cv::blur(image, blur, Size(5, 5));
 
-    // bilateralFilter(image, blur, 15, 30, 1, BORDER_DEFAULT);
-    // show("image", blur);
+    // get road color and mask
     Mat mask = Mat::zeros(image.size(), CV_8UC1), hsv;
     cvtColor(blur, hsv, COLOR_BGR2HSV);
     inRange(hsv, this->lower, this->upper, mask);
@@ -908,11 +1356,11 @@ Mat PathChaser::chunk(Mat frame) {
         morphologyEx(mask, mask, CV_MOP_OPEN, kernel);
     }
 
+    // the largest contour is often the main road area
     vector<vector<Point>> contours;
     findContours(mask, contours, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0));
 
-    
-
+    // find largest contour
     double maxarea = -1;
     for_each(contours.begin(), contours.end(), [&](vector<Point> contour) {
         double area = contourArea(contour);
@@ -926,42 +1374,158 @@ Mat PathChaser::chunk(Mat frame) {
         }
     });
 
-    drawContours(image, contours, 0, this->randclr());
+    Mat fnlmask = Mat::zeros(image.size(), CV_8UC1);
+    drawContours(fnlmask, contours, 0, this->clrwht, CV_FILLED);
 
-    
+    Mat cropmask = Mat::zeros(image.size(), CV_8UC3);
+    image.copyTo(cropmask, fnlmask);
 
-    // fill image in mask
-    
-    Mat filler = Mat::zeros(image.size(), CV_8UC3);
+    drawContours(cropmask, contours, 0, this->clrwht, 3, 8);
 
-    image.copyTo(filler, mask);
+    #ifdef show_cloak
+    show("before chunk", cropmask);
+    #endif
 
-    
-    show("filler", filler);
+    cropmask = this->preprocess(cropmask);
+    equalizeHist(cropmask, cropmask);
 
-    // Mat edges = this->roadshape(filler);
-    // show("edges", edges);
-
-    filler = this->preprocess(filler);
-
-    this->magicwand(filler);
-
-    show("path line", filler);
-
-    show("image", mask);
-   
-    return image;
+    return cropmask;
 }
 
 vector<Vec4i> PathChaser::findHoughLines(Mat mask, Mat &output) {
     vector<Vec4i> lines;
     HoughLinesP(mask, lines, 1, CV_PI/180, 80, 30, 10 );
-    cout << lines.size() << endl;
     for (int i = 0; i < lines.size(); i++) {
          line(output, Point(lines[i][0], lines[i][1]),
             Point(lines[i][2], lines[i][3]), Scalar(0,0,255), 3, 8 );
     }
     return lines;
+}
+
+double PathChaser::calcPointDist(Point2f M) {
+    double d = 0;
+
+    Point2f O = Point2f(this->fsize.width / 2, 0);
+    Point2f B = this->aglpoint(this->fsize.height);
+
+    Point2f dv = this->fvect(O, B); // directive vector
+    Point2f rv = Point2f(dv.y, - dv.x); // relative vector
+
+    /*
+        a(x - x0) + b(y - y0) = 0;
+        <=> ax - ax0 + by - by0 = 0
+        <=> ax + by - ax0 - by0 = 0
+        => c = - ax0 - by0
+    */
+
+    double a, b, c;
+    a = rv.x;
+    b = rv.y;
+    c = - (a * O.x + b * O.y);
+    
+    d = abs(a * M.x + b * M.y + c) / sqrt(a * a + b * b);
+
+    // double algd = this->cpblAgl;
+    // double aglr = algd * CV_PI / 180;
+    // double a, b, c, d; // a,b in y = ax + b
+
+    // Point2f R;
+
+    // if (algd > 90) a = tan(aglr) > 0 ? - tan(aglr) : tan(aglr);
+    // if (algd < 90) a = tan(aglr) < 0 ? - tan(aglr) : tan(aglr);
+
+    // b = O.y - a * O.x;
+
+    // c = b, b = -1,
+
+    // d = abs(a * M.x + b * M.y + c) / sqrt(a * a + b * b);
+
+    return d;
+}
+
+Point2f PathChaser::aglpoint(int y = 0) {
+    double algd = this->cpblAgl;
+    double aglr = algd * CV_PI / 180;
+    double a, b; // a,b in y = ax + b
+
+    Point2f O(this->fsize.width / 2, 0);
+    Point2f R;
+
+    if (algd > 90) a = tan(aglr) > 0 ? - tan(aglr) : tan(aglr);
+    if (algd < 90) a = tan(aglr) < 0 ? - tan(aglr) : tan(aglr);
+
+    if (algd != 90) {
+        b = O.y - a * O.x;
+        R.x = (y - b) / a;
+    } else {
+        R.x = 0;
+    }
+
+    R.y = y;
+
+    return R;
+
+}
+
+vector<vector<int>> PathChaser::kmeand(vector<int> items, vector<vector<int>> &indices, int md) {
+    vector<vector<int>> groups;
+
+    // build indices dictionary
+    map<int, int> idict;
+    for (int i = 0; i < items.size(); i++)
+        idict[items.at(i)] = i;
+
+    this->countsort(items);
+
+    stack<int> s;
+
+    int i = 0;
+    s.push(items.at(i++));
+
+    while (!s.empty()) {
+        int a = s.top();
+        int b = items.at(i++);
+
+        if (abs(a - b) <= md) {
+            s.push(b);
+        } else {
+            vector<int> group;
+            vector<int> gidxs;
+            while (!s.empty()) {
+                int v = s.top();
+                group.push_back(v);
+                gidxs.push_back(idict.at(v));
+                s.pop();
+            }
+            groups.push_back(group);
+            indices.push_back(gidxs);
+            s.push(b);
+        }
+
+        if (i == items.size()) break;
+    }
+
+    vector<int> group;
+    vector<int> gidxs;
+    while (!s.empty()) {
+        int v = s.top();
+        group.push_back(v);
+        gidxs.push_back(idict.at(v));
+        s.pop();
+    }
+    groups.push_back(group);
+    indices.push_back(gidxs);
+
+    return groups;
+}
+
+void PathChaser::countsort(vector<int> &v) {
+    std::map<int, int> freq;
+    for (int i = 0; i < v.size(); i++) freq[v.at(i)]++;
+    int i = 0;
+    for (auto it: freq) {
+        while (it.second--) v[i++] = it.first;
+    }
 }
 
 void PathChaser::magicwand(Mat image) {
@@ -1156,11 +1720,6 @@ void PathChaser::minmax(Mat frame, bool e) {
             #endif
         }
     }
-
-    #ifdef debug
-        cout << "lower " << this->print(this->min, 3) << endl;
-        cout << "upper " << this->print(this->max, 3) << endl;
-    #endif
 }
 
 void PathChaser::updsclr() {
@@ -1294,6 +1853,7 @@ vector<Point2f> PathChaser::genpoints(vector<Mat> parts) {
     for (int i = parts.size() - 1; i >= 0; i--) {
         if (k++ > this->cpLimlv) break;
         Mat part = parts.at(i);
+        
         vector<Point2f> centroits = this->converge(part);
 
         for (int j = 0; j < centroits.size(); j++) {
@@ -1477,7 +2037,6 @@ vector<Point2f> PathChaser::converge(Mat frame) {
     return center;
 }
 
-
 // read file config
 
 bool PathChaser::readconfig(string fn) {
@@ -1571,6 +2130,12 @@ void PathChaser::fillparam() {
     this->tbxX = this->param("clrtrp_x");
     this->tbxY = this->param("clrtrp_y");
 
+    // isolate box
+    this->isobox[0] = this->param("crpb_top");
+    this->isobox[1] = this->param("crpb_right");
+    this->isobox[2] = this->param("crpb_bottom");
+    this->isobox[3] = this->param("crpb_left");
+
     // color box
     this->clrbox[0] = this->param("clrbox_x");
     this->clrbox[1] = this->param("clrbox_y");
@@ -1618,7 +2183,10 @@ void PathChaser::fillparam() {
 }
 
 void PathChaser::settrackbar() {
-    #ifdef debug
+    // this->dbwn9 = "Clustering points by line";
+    // namedWindow(this->dbwn9, 1);
+    // createTrackbar("Angle", this->dbwn9, &this->cpblAgl, 180, PathChaser::debugger, this);
+    // createTrackbar("Distance", this->dbwn9, &this->cpbDist, 1000, PathChaser::debugger, this);
 
     #ifdef debug_chunk_trapazoid
     this->dbwn8 = "Trapazoid ROI Area";
@@ -1716,7 +2284,6 @@ void PathChaser::settrackbar() {
     this->clrwht = Scalar(255, 255, 255);
     this->clrblu = Scalar(255, 0, 0);
     this->rng = RNG(12345);
-    #endif
 }
 
 double PathChaser::calcDistanceP(Point2f a, Point2f b) {
@@ -1842,8 +2409,6 @@ vector<vector<Point2f>> PathChaser::groupclusters(
     for_each(newclusters.begin(), newclusters.end(), [](vector<Point2f>* cluster){
         delete cluster;
     });
-
-    // cout << newclusters.size() << " " << nclusters.size() << endl;
 
     return nclusters;
 }
@@ -1997,7 +2562,7 @@ vector<vector<Point2f>> PathChaser::findIntersection (
             double a1 = this->avect(v1, v3);
             double a2 = this->avect(v2, v3);
             double kp = a1 / a2;
-            // cout << kp << endl;
+
             if (kp <= this->clsAgliL || kp >= this->clsAgliH) {
                 continue;
             }

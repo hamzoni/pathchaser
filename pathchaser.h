@@ -14,25 +14,32 @@
 using namespace std;
 using namespace cv;
 
+// #define test_algorithm
+
+#define debug
+
 // #define debug_colorsearch
 // #define debug_rmnoise_mask
 // #define debug_chunk_trapazoid
 
 // #define debug_birdview
-#define debug_preprocess
-// #define debug_noiseremove
+// #define debug_preprocess
+#define debug_noiseremove
 
 /* graph 1: debug segmentation, clustering, fitline and fitline intersection */
-#define debug_graph1
-#define debug_segment
-#define debug_clustering
-#define debug_fitline
-#define debug_intersect
+// #define debug_graph1
+// #define debug_segment
+// #define debug_clustering
+// #define debug_fitline
+// #define debug_intersect
 
 /* graph 2: debug cluster grouping */
 // #define debug_graph2
 // #define debug_cluster_grouping
 // #define debug_threeway_detect
+
+// #define show_cloak
+// #define shop_clot
 
 class PathChaser
 {
@@ -87,6 +94,10 @@ private:
     int mgAgl; // debug value for clsAglFm
     float clsAglFm; // min acceptable angle
 
+    // cluster point by line params
+    int cpblAgl; // angle of line to Ox
+    int cpbDist; // distance of point to line
+
     // color
     Scalar clrred, clrgrn, clrblu, clrylw, clrwht;
     RNG rng;
@@ -94,7 +105,11 @@ private:
     // color box trap params
     int tbxLW, tbxHW, tbxH, tbxX, tbxY;
 
+
+
 public:
+    bool clingleft;
+
     // params container config file
     std::map<string, string> params;
 
@@ -106,6 +121,19 @@ public:
     
     // frame seeder: number of frame to get color range
     int fcp;
+
+    // convolution
+    enum ConvolutionType {   
+        /* Return the full convolution, including border */
+        CONVOLUTION_FULL, 
+        
+        /* Return only the part that corresponds to the original image */
+        CONVOLUTION_SAME,
+        
+        /* Return only the submatrix containing elements that were not influenced by the border */
+        CONVOLUTION_VALID
+    };
+
 
     // color search mask
     string dbwn6;
@@ -131,6 +159,9 @@ public:
 
     // debug graph2 params
     string dbwn5;
+
+    // debug cluster point by line
+    string dbwn9;
 
     explicit PathChaser();
     // setup
@@ -161,8 +192,10 @@ public:
     double lvect(Point2f v); // find length of a vectors
     double pvect(Point2f v1, Point2f v2); // find dot product of two vectors
     double avect(Point2f v1, Point2f v2); // find angle of two vectors
+    Point2f mpoint(Point2f a, Point2f b);
 
     // cluster point
+    void groupByLine(vector<Point2f> points);
     vector<vector<Point2f>> gencluster(vector<Mat> parts);
     vector<vector<Point2f>> filterclusters(vector<vector<Point2f>> clusters, int minpoint);
     vector<vector<Point2f>> groupclusters(
@@ -194,6 +227,7 @@ public:
     Mat findCtrMask(Mat bin, vector<Rect> &roirects);
     
     // points
+    vector<vector<int>> kmeand(vector<int> items, vector<vector<int>> &indices, int md);
     vector<vector<Point2f>> dbscan(vector<Point2f> points, int epsilon);
     vector<vector<Point2f>> findIntersection(
         vector<vector<Point2f>> grp, 
@@ -222,6 +256,10 @@ public:
     void thinningIteration(Mat& im, int iter);
     void thinning(Mat& im);
     Mat skeletonization(Mat inputImage);
+    void conv2(
+        const cv::Mat &img, const cv::Mat& kernel, 
+        PathChaser::ConvolutionType type, cv::Mat& dest
+    );
 
     // image refining
     void ctrclean(Mat frame);
@@ -229,7 +267,8 @@ public:
     Mat masknoisermv(Mat mask);
 
     // main
-    Mat roadline(Mat frame);
+    double roadline(Mat frame);
+    double roadlineOTSU(Mat frame);
 
     // debug
     void video(string video, int wk);
@@ -256,7 +295,29 @@ public:
     void minmaxroi(Mat roi, Scalar &min, Scalar &max);
     void minmax(Mat frame, bool e);
     void updsclr(); // update scalar masking
-    
+
+    // misc math and logic
+    double sqr(double x);
+    bool isInRange(double val, double l, double r);
+    double calcPointDist(Point2f M);
+    void countsort( vector<int> &v); // where A is in and B is out
+    Point2f aglpoint(int y);
+
+    // misc
+    void testAlgorithm();
+
+    // transform
+    void waveletTransform(
+        const cv::Mat& img, 
+        cv::Mat& edge, 
+        double threshold
+    );
+
+    // angle calculate
+    double calcAngle(vector<Point2f> left, vector<Point2f> right);
+
+    // convert radian to degree - phi is diviation of number
+    double rtd(double rad, double phi); 
 };
 
 #endif // PATHCHASER_H
